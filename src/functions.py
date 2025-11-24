@@ -350,36 +350,61 @@ def construct_prompt(query, text_results, image_results):
     """
 
     text_context = ""
-    for text in text_results:
-        if text_results:
-            text_context = text_context + "**Article title:** " + text['article_title'] + "\n"
-            text_context = text_context + "**Section:**  " + text['section'] + "\n"
-            text_context = text_context + "**Snippet:** " + text['text'] + "\n\n"
+    if text_results:
+        text_context = "## TEXT CONTENT FROM DOCUMENT:\n\n"
+        for text in text_results:
+            text_context = text_context + "**Article:** " + text['article_title'] + "\n"
+            text_context = text_context + "**Section:** " + text['section'] + "\n"
+            text_context = text_context + "**Content:** " + text['text'] + "\n\n"
 
     image_context = ""
-    for image in image_results:
-        if image_results:
-            image_context = image_context + "**Article title:** " + image['article_title'] + "\n"
-            image_context = image_context + "**Section:**  " + image['section'] + "\n"
-            image_context = image_context + "**Image Path:**  " + image['image_path'] + "\n"
-            image_context = image_context + "**Image Caption:** " + image['caption'] + "\n\n"
+    if image_results:
+        image_context = "\n## IMAGE CONTENT FROM DOCUMENT:\n\n"
+        for image in image_results:
+            image_context = image_context + "**Article:** " + image['article_title'] + "\n"
+            image_context = image_context + "**Section:** " + image['section'] + "\n"
+            image_context = image_context + "**Caption:** " + image['caption'] + "\n"
+            image_context = image_context + "(Image is also provided below)\n\n"
 
-    # construct prompt
-    return f"""Given the query "{query}" and the following relevant snippets:
+    # construct prompt - prioritize text content
+    return f"""You are a helpful assistant analyzing document content.
 
-    {text_context}
-    {image_context}
+USER QUERY: "{query}"
 
-    Please provide a concise and accurate answer to the query, incorporating relevant information from the provided snippets where possible.
+PRIMARY SOURCE - TEXT CONTENT:
+{text_context if text_context else "No text content available."}
 
-    """
+SECONDARY SOURCE - IMAGE CONTENT:
+{image_context if image_context else "No image content available."}
+
+INSTRUCTIONS:
+1. First, use the text content from the document to answer the query
+2. If an image is provided, use it to supplement your answer
+3. Base your answer primarily on the extracted text content, not just the image
+4. Be specific and cite which section of the document your information comes from
+5. Provide a concise and accurate answer
+
+ANSWER:"""
 
 def context_retrieval(query, text_embeddings, image_embeddings, text_content_list, image_content_list, 
-                    text_k=15, image_k=5, 
-                    text_threshold=0.01, image_threshold=0.25,
-                    text_temperature=0.25, image_temperature=0.5):
+                    text_k=20, image_k=3, 
+                    text_threshold=0.005, image_threshold=0.15,
+                    text_temperature=0.35, image_temperature=0.6):
     """
     Perform context retrieval over embeddings and return top k results.
+    
+    Args:
+        query (str): The user's query
+        text_embeddings: Text embeddings to search over
+        image_embeddings: Image embeddings to search over
+        text_content_list: List of text content items
+        image_content_list: List of image content items
+        text_k (int): Number of top text results to retrieve (default: 20)
+        image_k (int): Number of top image results to retrieve (default: 3)
+        text_threshold (float): Minimum similarity threshold for text (default: 0.005)
+        image_threshold (float): Minimum similarity threshold for images (default: 0.15)
+        text_temperature (float): Temperature for text similarity softmax (default: 0.35)
+        image_temperature (float): Temperature for image similarity softmax (default: 0.6)
     """
     # embed query using CLIP
     query_embed = embed_text(query)

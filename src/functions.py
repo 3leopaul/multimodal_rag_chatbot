@@ -5,94 +5,140 @@ import re
 from transformers import CLIPProcessor, CLIPTextModelWithProjection
 import torch
 
+def pre_process_text(text):
+    """
+    Initial cleaning: fixes hyphenation and removes artifacts, but PRESERVES newlines.
+    """
+    # Fix hyphenation (e.g., "Da-\ntabases" -> "Databases")
+    text = re.sub(r'(\w+)-\s*\n\s*(\w+)', r'\1\2', text)
+    
+    # Remove "read more" artifacts
+    text = re.sub(r'read\s*more', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'\.\.\.', '.', text)
+    
+    # Fix encoding replacement characters
+    text = text.replace('', '')
+    
+    return text
+
+def post_process_text(text):
+    """
+    Final cleaning: normalizes whitespace for chunking.
+    """
+    # Normalize whitespace (flattens text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
+
 #Split text into chunks with overlap.
 def split_text_with_overlap(text, max_length=256, overlap_percentage=0.25):
+    # ... (same as before)
     if len(text) <= max_length:
         return [text]
     
     overlap_size = int(max_length * overlap_percentage)
     chunks = []
     
-    # Calculate the starting indices for each chunk based on max_length and overlap
-    chunk_starts = range(0, len(text), max_length - overlap_size)
-    
-    for start in chunk_starts:
-        chunk = text[start:start + max_length]
+    start = 0
+    while start < len(text):
+        end = start + max_length
+        
+        if end >= len(text):
+            chunks.append(text[start:])
+            break
             
-        # Attempt to break the chunk at the last space to avoid splitting words
-        if start + max_length < len(text):
-            last_space = chunk.rfind(' ')
+        # Try to find a sentence ending to break at
+        last_period = text.rfind('.', start, end)
+        if last_period != -1 and last_period > start + max_length // 2:
+            end = last_period + 1
+        else:
+            # Fallback to last space
+            last_space = text.rfind(' ', start, end)
             if last_space != -1:
-                chunk = chunk[:last_space]
+                end = last_space
+        
+        chunk = text[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
             
-        chunks.append(chunk.strip())
+        start = end - overlap_size
+        # Ensure we move forward
+        if start <= 0:
+             start = end 
     
     return chunks
 
 def get_section_header(chunk):
-    """
-    Identifies a known resume section header at the start of a text chunk.
-    If no major header is found, it finds the first capitalized line or defaults.
-    """
-    # Define major resume sections (case-insensitive search for flexibility)
+    # ... (kept for compatibility but less used now)
     MAJOR_HEADERS = {
         "EDUCATION": "EDUCATION",
         "SKILLS": "SKILLS",
         "PROFESSIONAL EXPERIENCE": "PROFESSIONAL EXPERIENCE",
         "LANGUAGES": "LANGUAGES",
         "INTERESTS": "INTERESTS",
+        "PROJECTS": "PROJECTS",
+        "SUMMARY": "SUMMARY"
     }
     
-    # 1. Check for a major header at the start of the chunk
     for pattern, title in MAJOR_HEADERS.items():
-        if re.search(r'^\s*' + re.escape(pattern) + r'\s*$', chunk[:50].strip(), re.IGNORECASE):
+        if re.search(r'(?:^|\n)\s*' + re.escape(pattern) + r'[:\s]*$', chunk[:50], re.IGNORECASE):
             return title
             
-    # 2. Check for a specific project/item title (e.g., "P2IP Project - ESILV")
-    # This captures the first few non-header lines which often name the item
     first_line = chunk.split('\n')[0].strip()
     if len(first_line) > 5 and len(first_line) < 60 and first_line.isupper() and not first_line in MAJOR_HEADERS.values():
          return first_line
          
-    # 3. Default for snippets at the start (usually contact/summary)
     if 'Engineering Student' in chunk[:100]:
         return "Summary & Contact"
         
-    return None # Return None if no suitable header is found
+    return None
 
 def parse_pdf_content(pdf_path):
     # ... (existing setup code)
     doc = fitz.open(pdf_path)
-    article_title_base = os.path.basename(pdf_path) # Use this as a fallback source ID
+    article_title_base = os.path.basename(pdf_path)
     structured_content = []
+    
+    MAJOR_HEADERS = [
+        "EDUCATION", "SKILLS", "PROFESSIONAL EXPERIENCE", "LANGUAGES", 
+        "INTERESTS", "PROJECTS", "SUMMARY"
+    ]
     
     for page_num, page in enumerate(doc):
         text = page.get_text()
-        if text.strip():
-            text_chunks = split_text_with_overlap(text)
+        
+        # 1. Pre-process (keep newlines for regex)
+        text = pre_process_text(text)
+        
+        if not text.strip():
+            continue
             
-            # Track the most recent major header found
-            current_major_header = article_title_base
+        # 2. Split text by major headers
+        pattern = r'(?=(?:^|\n)\s*(?:' + '|'.join(map(re.escape, MAJOR_HEADERS)) + r')[:\s])'
+        sections = re.split(pattern, text, flags=re.IGNORECASE)
+        
+        current_header = "Summary & Contact"
+        
+        for section_text in sections:
+            if not section_text.strip():
+                continue
+                
+            # Check if this section starts with a header
+            header_match = re.match(r'(?:^|\n)\s*(' + '|'.join(map(re.escape, MAJOR_HEADERS)) + r')[:\s]', section_text, re.IGNORECASE)
+            if header_match:
+                current_header = header_match.group(1).upper()
+                # Remove the header from the text to avoid repetition if desired, 
+                # or keep it. Let's keep it but ensure it's clean.
             
-            for chunk in text_chunks:
-                # 1. Identify the new, better title
-                new_title = get_section_header(chunk)
-                
-                if new_title:
-                    # If we found a major header, update the tracker
-                    if new_title in ["EDUCATION", "SKILLS", "PROFESSIONAL EXPERIENCE", "LANGUAGES", "INTERESTS"]:
-                        current_major_header = new_title
-                    else:
-                        # If it's a project title, use a combination for better context
-                        current_major_header = f"{current_major_header}: {new_title}"
-
-                # 2. Use the best available title for the snippet
-                snippet_title_to_use = new_title if new_title else current_major_header
-                
+            # 3. Post-process (flatten)
+            cleaned_section_text = post_process_text(section_text)
+            
+            # 4. Chunk
+            section_chunks = split_text_with_overlap(cleaned_section_text)
+            
+            for chunk in section_chunks:
                 structured_content.append({
-                    # Key change: Use the section name as the snippet title
-                    'snippet_title': snippet_title_to_use, 
-                    'section': f"Page {page_num + 1}",
+                    'snippet_title': f"{article_title_base}: {current_header}",
+                    'section': current_header,
                     'text': chunk
                 })
     
@@ -167,16 +213,31 @@ def load_from_json(input_file):
     with open(input_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-# Convet text to embeddings using CLIP
+# Global model and processor cache (loaded once)
+_CLIP_MODEL = None
+_CLIP_PROCESSOR = None
+
+def _get_clip_model():
+    """Lazy-load and cache the CLIP model and processor."""
+    global _CLIP_MODEL, _CLIP_PROCESSOR
+    
+    if _CLIP_MODEL is None:
+        print("Loading CLIP model (one-time initialization)...")
+        _CLIP_MODEL = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch16")
+        _CLIP_PROCESSOR = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+        print("CLIP model loaded successfully!")
+    
+    return _CLIP_MODEL, _CLIP_PROCESSOR
+
+# Convert text to embeddings using CLIP
 def embed_text(text):
     """
-        
+    Generate text embeddings using CLIP model.
+    Model is cached after first load for performance.
     """
+    # Get cached model and processor
+    model, processor = _get_clip_model()
     
-    # Load the pre-trained CLIP text model for generating embeddings
-    model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch16")
-    # Load the CLIP processor for tokenizing text and preprocessing images
-    processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
     # Tokenize and preprocess the input text to prepare it for the model
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     # Pass the processed inputs through the model to generate text embeddings
@@ -246,7 +307,7 @@ def construct_prompt(query, text_results, image_results):
             MAX_LEN = 250 # Reduced from 300 for increased safety
             if len(snippet) > MAX_LEN:
                 # Truncate and ensure it ends cleanly with a period/marker
-                snippet = snippet[:MAX_LEN].rsplit(' ', 1)[0] + "..."
+                snippet = snippet[:MAX_LEN].rsplit(' ', 1)[0] + "."
             
             # Use strong separation (double newline) to prevent list merging
             text_context += f"--- TEXT SNIPPET {i+1} ---\n"
@@ -258,9 +319,9 @@ def construct_prompt(query, text_results, image_results):
     if image_results:
         image_context = "## IMAGE CAPTIONS (Secondary Context):\n\n"
         for i, im in enumerate(image_results[:3]):
-            caption = im.get('caption', 'No caption')
-            title = im.get('snippet_title' '')
-            section = im.get('section', '')
+            caption = im.get('caption')
+            title = im.get('snippet_title')
+            section = im.get('section')
             # Use strong separation here too
             image_context += f"--- IMAGE SNIPPET {i+1} ---\n"
             image_context += f"Source: {title} | {section}\n"

@@ -9,6 +9,13 @@ A Retrieval-Augmented Generation (RAG) chatbot capable of processing and underst
 
 ### Answers questions concisely
 ![alt text](image.png)
+![alt text](image-3.png)
+
+### Can answer new modified questions
+![alt text](image-4.png)
+
+### Can analyse images from the document and answer questions based on it
+![alt text](image-2.png)
 
 
 ## Features

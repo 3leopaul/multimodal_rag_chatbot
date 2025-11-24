@@ -2,6 +2,15 @@
 
 A Retrieval-Augmented Generation (RAG) chatbot capable of processing and understanding both text and images from PDF documents. This project uses local LLMs (ollama) and embedding models (CLIP) to provide a secure and private conversational interface for your document. It also serves as a learning template to grasp the basic structure of a multimodal RAG chatbot.
 
+## Scrennshots
+
+### Starting interface with example prompts
+![alt text](image-1.png)
+
+### Answers questions concisely
+![alt text](image.png)
+
+
 ## Features
 
 - **Multimodal Understanding**: Processes both text and images from PDF documents.

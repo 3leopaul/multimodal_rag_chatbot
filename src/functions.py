@@ -29,11 +29,41 @@ def split_text_with_overlap(text, max_length=256, overlap_percentage=0.25):
     
     return chunks
 
-# Parse PDF content and extract structured content with sections (pages) and text.
-def parse_pdf_content(pdf_path):
+def get_section_header(chunk):
+    """
+    Identifies a known resume section header at the start of a text chunk.
+    If no major header is found, it finds the first capitalized line or defaults.
+    """
+    # Define major resume sections (case-insensitive search for flexibility)
+    MAJOR_HEADERS = {
+        "EDUCATION": "EDUCATION",
+        "SKILLS": "SKILLS",
+        "PROFESSIONAL EXPERIENCE": "PROFESSIONAL EXPERIENCE",
+        "LANGUAGES": "LANGUAGES",
+        "INTERESTS": "INTERESTS",
+    }
+    
+    # 1. Check for a major header at the start of the chunk
+    for pattern, title in MAJOR_HEADERS.items():
+        if re.search(r'^\s*' + re.escape(pattern) + r'\s*$', chunk[:50].strip(), re.IGNORECASE):
+            return title
+            
+    # 2. Check for a specific project/item title (e.g., "P2IP Project - ESILV")
+    # This captures the first few non-header lines which often name the item
+    first_line = chunk.split('\n')[0].strip()
+    if len(first_line) > 5 and len(first_line) < 60 and first_line.isupper() and not first_line in MAJOR_HEADERS.values():
+         return first_line
+         
+    # 3. Default for snippets at the start (usually contact/summary)
+    if 'Engineering Student' in chunk[:100]:
+        return "Summary & Contact"
+        
+    return None # Return None if no suitable header is found
 
+def parse_pdf_content(pdf_path):
+    # ... (existing setup code)
     doc = fitz.open(pdf_path)
-    article_title = os.path.basename(pdf_path)
+    article_title_base = os.path.basename(pdf_path) # Use this as a fallback source ID
     structured_content = []
     
     for page_num, page in enumerate(doc):
@@ -41,9 +71,27 @@ def parse_pdf_content(pdf_path):
         if text.strip():
             text_chunks = split_text_with_overlap(text)
             
+            # Track the most recent major header found
+            current_major_header = article_title_base
+            
             for chunk in text_chunks:
+                # 1. Identify the new, better title
+                new_title = get_section_header(chunk)
+                
+                if new_title:
+                    # If we found a major header, update the tracker
+                    if new_title in ["EDUCATION", "SKILLS", "PROFESSIONAL EXPERIENCE", "LANGUAGES", "INTERESTS"]:
+                        current_major_header = new_title
+                    else:
+                        # If it's a project title, use a combination for better context
+                        current_major_header = f"{current_major_header}: {new_title}"
+
+                # 2. Use the best available title for the snippet
+                snippet_title_to_use = new_title if new_title else current_major_header
+                
                 structured_content.append({
-                    'article_title': article_title,
+                    # Key change: Use the section name as the snippet title
+                    'snippet_title': snippet_title_to_use, 
                     'section': f"Page {page_num + 1}",
                     'text': chunk
                 })
@@ -56,8 +104,8 @@ def parse_pdf_images(pdf_path):
 
     # Open the PDF file using PyMuPDF
     doc = fitz.open(pdf_path)
-    # Extract the filename as the article title
-    article_title = os.path.basename(pdf_path)
+    # Extract the filename as the snippet title
+    snippet_title = os.path.basename(pdf_path)
     # Initialize the list to store structured image data
     structured_content = []
     
@@ -76,7 +124,7 @@ def parse_pdf_images(pdf_path):
             image_ext = base_image["ext"]
             
             # Construct a unique filename using title, page number, and image index
-            image_filename = f"{os.path.splitext(article_title)[0]}_p{page_num+1}_{img_index}.{image_ext}"
+            image_filename = f"{os.path.splitext(snippet_title)[0]}_p{page_num+1}_{img_index}.{image_ext}"
             # Sanitize the filename by removing invalid characters
             image_filename = re.sub(r'[<>:"/\\\\|?*]', '_', image_filename).strip('_')
             # Define the full local path for saving the extracted image
@@ -88,11 +136,11 @@ def parse_pdf_images(pdf_path):
             
             # Append the image metadata and path to the structured content list
             structured_content.append({
-                'article_title': article_title,
+                'snippet_title': snippet_title,
                 'section': f"Page {page_num + 1}",
                 'image_path': local_image_path,
                 # Add a descriptive caption including the source and page number
-                'caption': f"Image from {article_title}, Page {page_num + 1}"
+                'caption': f"Image from {snippet_title}, Page {page_num + 1}"
             })
             
     return structured_content
@@ -177,46 +225,72 @@ def similarity_search(query_embed, target_embeddings, content_list, k=5, thresho
 
 def construct_prompt(query, text_results, image_results):
     """
-    Construct a prompt for the LLM to generate a response.
+    Construct a prompt for the LLM to generate a response, optimized for
+    repetition avoidance and concise summarization.
     """
-
+    # 1. Build a refined text context
     text_context = ""
     if text_results:
-        text_context = "## TEXT CONTENT FROM DOCUMENT:\n\n"
-        for text in text_results:
-            text_context = text_context + "**Article:** " + text['article_title'] + "\n"
-            text_context = text_context + "**Section:** " + text['section'] + "\n"
-            text_context = text_context + "**Content:** " + text['text'] + "\n\n"
-
+        text_context = "## DOCUMENT TEXT (Primary Context):\n\n"
+        
+        for i, t in enumerate(text_results[:12]):
+            snippet = t.get('text', '').strip()
+            title = t.get('snippet_title')
+            section = t.get('section', '')
+            
+            # --- Anti-Repetition/Cleaning Step ---
+            # Aggressively remove list continuations from the source
+            snippet = snippet.replace('., etc.', '.').replace(', etc.', '.').replace('...', '.')
+            
+            # Stricter Truncation
+            MAX_LEN = 250 # Reduced from 300 for increased safety
+            if len(snippet) > MAX_LEN:
+                # Truncate and ensure it ends cleanly with a period/marker
+                snippet = snippet[:MAX_LEN].rsplit(' ', 1)[0] + "..."
+            
+            # Use strong separation (double newline) to prevent list merging
+            text_context += f"--- TEXT SNIPPET {i+1} ---\n"
+            text_context += f"Source: {title} | {section}\n"
+            text_context += f"Content: {snippet}\n\n"
+            
+    # 2. Summarize image captions only
     image_context = ""
     if image_results:
-        image_context = "\n## IMAGE CONTENT FROM DOCUMENT:\n\n"
-        # Find all header (h1-h3) and image elements in the HTML_results:
-        for image in image_results:
-            image_context = image_context + "**Article:** " + image['article_title'] + "\n"
-            image_context = image_context + "**Section:** " + image['section'] + "\n"
-            image_context = image_context + "**Caption:** " + image['caption'] + "\n"
-            image_context = image_context + "(Image is also provided below)\n\n"
+        image_context = "## IMAGE CAPTIONS (Secondary Context):\n\n"
+        for i, im in enumerate(image_results[:3]):
+            caption = im.get('caption', 'No caption')
+            title = im.get('snippet_title' '')
+            section = im.get('section', '')
+            # Use strong separation here too
+            image_context += f"--- IMAGE SNIPPET {i+1} ---\n"
+            image_context += f"Source: {title} | {section}\n"
+            image_context += f"Caption: {caption}\n\n"
 
-    # Construct the final prompt for the LLM, prioritizing text content and including image captions
-    return f"""You are a helpful assistant analyzing document content.
+    # 3. Final prompt with explicit anti-repetition instruction
+    return f"""You are a concise assistant whose job is to answer the user's question using ONLY the document's extracted text.
 
 USER QUERY: "{query}"
 
-PRIMARY SOURCE - TEXT CONTENT:
-{text_context if text_context else "No text content available."}
+---
 
-SECONDARY SOURCE - IMAGE CONTENT:
-{image_context if image_context else "No image content available."}
+DOCUMENT TEXT (Primary Context):
+{text_context if text_context else 'No primary text available.'}
 
-INSTRUCTIONS:
-1. First, use the text content from the document to answer the query
-2. If an image is provided, use it to supplement your answer
-3. Base your answer primarily on the extracted text content, not just the image
-4. Be specific and cite which section of the document your information comes from
-5. Provide a concise and accurate answer
+---
+
+IMAGE INFO (Secondary Context - captions only):
+{image_context if image_context else 'No image captions available.'}
+
+---
+
+INSTRUCTIONS (MUST follow exactly):
+1) Use ONLY the **DOCUMENT TEXT** above to answer the user's query. Do NOT use or describe images unless the user explicitly asks for image analysis.
+2) Provide a single, direct answer to the user's question. Be concise (one or two short sentences) and do NOT add extra commentary.
+3) **STRICTLY DO NOT REPEAT PHRASES OR LIST MARKERS (e.g., 'etc.', 'Development of', 'Data analysis and') multiple times in your final answer.**
+4) If the document does not contain an answer, reply: "I couldn't find that information in the document." (nothing else).
 
 ANSWER:"""
+
 
 def context_retrieval(query, text_embeddings, image_embeddings, text_content_list, image_content_list, 
                     text_k=20, image_k=3, 

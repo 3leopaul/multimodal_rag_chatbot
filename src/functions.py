@@ -1,11 +1,7 @@
-from bs4 import BeautifulSoup
 import fitz
 import os
-import requests
 import json
 import re
-import hashlib
-from urllib.parse import urlparse
 from transformers import CLIPProcessor, CLIPTextModelWithProjection
 import torch
 

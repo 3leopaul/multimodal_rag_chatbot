@@ -9,23 +9,21 @@ from urllib.parse import urlparse
 from transformers import CLIPProcessor, CLIPTextModelWithProjection
 import torch
 
-
+#Split text into chunks with overlap.
 def split_text_with_overlap(text, max_length=256, overlap_percentage=0.25):
-    """Split text into chunks with overlap."""
     if len(text) <= max_length:
         return [text]
     
     overlap_size = int(max_length * overlap_percentage)
     chunks = []
     
-    # Calculate total number of potential chunks
+    # Calculate the starting indices for each chunk based on max_length and overlap
     chunk_starts = range(0, len(text), max_length - overlap_size)
     
     for start in chunk_starts:
-        # Take a chunk of max_length or remaining text
         chunk = text[start:start + max_length]
             
-        # If not the last chunk, try to break at a space
+        # Attempt to break the chunk at the last space to avoid splitting words
         if start + max_length < len(text):
             last_space = chunk.rfind(' ')
             if last_space != -1:
@@ -35,177 +33,9 @@ def split_text_with_overlap(text, max_length=256, overlap_percentage=0.25):
     
     return chunks
 
-def parse_html_content_fine_grained(html_content):
-    """
-    Parse HTML content and extract structured content with sections and paragraphs.
-    
-    Args:
-        html_content (str): Raw HTML content to parse
-        
-    Returns:
-        list: List of dictionaries containing structured content
-    """
-    # Parse HTML
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Get article title
-    article_title = soup.find('title').get_text().strip() if soup.find('title') else "Untitled"
-    
-    # Initialize variables
-    structured_content = []
-    current_section = "Main"  # Default section if no headers found
-    
-    # Find all headers and paragraphs
-    content_elements = soup.find_all(['h1', 'h2', 'h3', 'p'])
-    
-    for element in content_elements:
-        if element.name in ['h1', 'h2', 'h3']:
-            current_section = element.get_text().strip()
-        elif element.name == 'p' and element.get_text().strip():
-
-            text = element.get_text().strip()
-            # Split text into chunks with overlap
-            text_chunks = split_text_with_overlap(text)
-            
-            for chunk in text_chunks:
-                structured_content.append({
-                    'article_title': article_title,
-                    'section': current_section,
-                    'text': chunk
-                })
-    
-    return structured_content
-
-def parse_html_content(html_content):
-    """
-    Parse HTML content and extract structured content with sections and paragraphs.
-    
-    Args:
-        html_content (str): Raw HTML content to parse
-        
-    Returns:
-        list: List of dictionaries containing structured content
-    """
-    # Parse HTML
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Get article title
-    article_title = soup.find('title').get_text().strip() if soup.find('title') else "Untitled"
-    
-    # Initialize variables
-    structured_content = []
-    current_section = "Main"  # Default section if no headers found
-    
-    # Find all headers and text content
-    content_elements = soup.find_all(['h1', 'h2', 'h3', 'p', 'ul', 'ol'])
-    
-    for element in content_elements:
-        if element.name in ['h1', 'h2', 'h3']:
-            current_section = element.get_text().strip()
-        elif element.name in ['p', 'ul', 'ol']:
-            text = element.get_text().strip()
-            # Only add non-empty content that's at least 30 characters long
-            if text and len(text) >= 30:
-                structured_content.append({
-                    'article_title': article_title,
-                    'section': current_section,
-                    'text': text
-                })
-    
-    return structured_content
-
-def parse_html_images(html_content):
-    """
-    Parse HTML content and extract images with their captions.
-    
-    Args:
-        html_content (str): Raw HTML content to parse
-        
-    Returns:
-        list: List of dictionaries containing images and their metadata
-    """
-    # Parse HTML
-    soup = BeautifulSoup(html_content, 'html.parser')
-    
-    # Get article title
-    article_title = soup.find('title').get_text().strip() if soup.find('title') else "Untitled"
-    
-    # Initialize variables
-    structured_content = []
-    current_section = "Main"  # Default section if no headers found
-    
-    # Find all headers and images
-    content_elements = soup.find_all(['h1', 'h2', 'h3', 'img', 'figure'])
-    
-    for element in content_elements:
-        if element.name in ['h1', 'h2', 'h3']:
-            current_section = element.get_text().strip()
-        elif element.name == 'img':
-            # Get image path
-            image_url = element.get('src', '')
-            
-            if image_url:  # Only proceed if there's an actual image URL
-                # Download the image
-                scraper = cloudscraper.create_scraper()
-                try:
-                    response = scraper.get(image_url)
-                    if response.status_code == 200:
-                        # Create images directory if it doesn't exist
-                        os.makedirs('images', exist_ok=True)
-                        
-                          # Extract image filename from URL and sanitize for filesystem
-                        parsed_url = urlparse(image_url)
-                        image_filename = os.path.basename(parsed_url.path) or parsed_url.netloc or "image"
-                        image_filename = re.sub(r'[<>:"/\\\\|?*]', '_', image_filename).strip('_')
-                        if not image_filename:
-                            digest = hashlib.md5(image_url.encode('utf-8')).hexdigest()
-                            image_filename = f"image_{digest}"
-                        if "." not in image_filename:
-                            image_filename = f"{image_filename}.jpg"
-                        
-                        # Define the local file path
-                        local_image_path = os.path.join('images', image_filename)
-                        
-                        # Save the image to the local file path
-                        with open(local_image_path, 'wb') as f:
-                            f.write(response.content)
-                        
-                        # Store the local file path in the dictionary
-                        image_path = local_image_path
-                    else:
-                        print(f"Failed to download {image_url}, status code: {response.status_code}")
-                        image_path = ''
-                except Exception as e:
-                    print(f"Error downloading {image_url}: {e}")
-                    image_path = ''
-            
-            # Try to get caption from alt text or figure caption
-            caption = element.get('alt', '')
-            if not caption and element.parent.name == 'figure':
-                figcaption = element.parent.find('figcaption')
-                if figcaption:
-                    caption = figcaption.get_text().strip()
-            
-            if image_path:  # Only add if there's an actual image path
-                structured_content.append({
-                    'article_title': article_title,
-                    'section': current_section,
-                    'image_path': image_path,
-                    'caption': caption or "No caption available"
-                })
-    
-    return structured_content
-
+# Parse PDF content and extract structured content with sections (pages) and text.
 def parse_pdf_content(pdf_path):
-    """
-    Parse PDF content and extract structured content with sections (pages) and text.
-    
-    Args:
-        pdf_path (str): Path to the PDF file
-        
-    Returns:
-        list: List of dictionaries containing structured content
-    """
+
     doc = fitz.open(pdf_path)
     article_title = os.path.basename(pdf_path)
     structured_content = []
@@ -213,7 +43,6 @@ def parse_pdf_content(pdf_path):
     for page_num, page in enumerate(doc):
         text = page.get_text()
         if text.strip():
-            # Split text into chunks with overlap
             text_chunks = split_text_with_overlap(text)
             
             for chunk in text_chunks:
@@ -225,82 +54,88 @@ def parse_pdf_content(pdf_path):
     
     return structured_content
 
+# Parse PDF content and extract images.
+
 def parse_pdf_images(pdf_path):
-    """
-    Parse PDF content and extract images.
-    
-    Args:
-        pdf_path (str): Path to the PDF file
-        
-    Returns:
-        list: List of dictionaries containing images and their metadata
-    """
+
+    # Open the PDF file using PyMuPDF
     doc = fitz.open(pdf_path)
+    # Extract the filename as the article title
     article_title = os.path.basename(pdf_path)
+    # Initialize the list to store structured image data
     structured_content = []
     
 
     
+    # Iterate through each page of the PDF
     for page_num, page in enumerate(doc):
+        # Get a list of all images on the current page
         image_list = page.get_images(full=True)
         for img_index, img in enumerate(image_list):
+            # Extract the image reference number
             xref = img[0]
+            # Extract the image dictionary including binary data and extension
             base_image = doc.extract_image(xref)
             image_bytes = base_image["image"]
             image_ext = base_image["ext"]
             
+            # Construct a unique filename using title, page number, and image index
             image_filename = f"{os.path.splitext(article_title)[0]}_p{page_num+1}_{img_index}.{image_ext}"
-            # Sanitize filename
+            # Sanitize the filename by removing invalid characters
             image_filename = re.sub(r'[<>:"/\\\\|?*]', '_', image_filename).strip('_')
-            
+            # Define the full local path for saving the extracted image
             local_image_path = os.path.join('../data/processed_files/extracted_images/', image_filename)
             
+            # Write the image binary data to the specified file path
             with open(local_image_path, "wb") as f:
                 f.write(image_bytes)
             
+            # Append the image metadata and path to the structured content list
             structured_content.append({
                 'article_title': article_title,
                 'section': f"Page {page_num + 1}",
                 'image_path': local_image_path,
+                # Add a descriptive caption including the source and page number
                 'caption': f"Image from {article_title}, Page {page_num + 1}"
             })
             
     return structured_content
 
+# Save structured content to a JSON file.
 def save_to_json(structured_content, output_file='output.json'):
     """
-    Save structured content to a JSON file.
+    
     
     Args:
         structured_content (list): List of dictionaries containing structured content
         output_file (str): Path to the output JSON file (default: 'output.json')
     """
-    # Create directory if it doesn't exist
+    # Create the output directory if it does not already exist
     os.makedirs(os.path.dirname(output_file) if os.path.dirname(output_file) else '.', exist_ok=True)
     
-    # Save to JSON file with proper formatting
+    # Save the structured content list to a JSON file with indentation
     with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(structured_content, f, indent=4, ensure_ascii=False)
 
+# Load structured content from a JSON file.
 def load_from_json(input_file):
-    """
-        Load structured content from a JSON file.
-    """
+
     with open(input_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+# Convet text to embeddings using CLIP
 def embed_text(text):
     """
-        Convet text to embeddings using CLIP
+        
     """
     
-    # import model
+    # Load the pre-trained CLIP text model for generating embeddings
     model = CLIPTextModelWithProjection.from_pretrained("openai/clip-vit-base-patch16")
-    # import processor (handles text tokenization and image preprocessing)
+    # Load the CLIP processor for tokenizing text and preprocessing images
     processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
-    # pre-process text and images
+    # Tokenize and preprocess the input text to prepare it for the model
     inputs = processor(text=[text], return_tensors="pt", padding=True)
-    # compute embeddings with CLIP
+    # Pass the processed inputs through the model to generate text embeddings
     outputs = model(**inputs)
 
     return outputs.text_embeds
@@ -322,23 +157,23 @@ def similarity_search(query_embed, target_embeddings, content_list, k=5, thresho
             - results: List of top k content matches
             - scores: Corresponding similarity scores
     """
-    # Calculate similarities
+    # Compute the dot product similarity between the query and target embeddings
     similarities = torch.matmul(query_embed, target_embeddings.T)
     
-    # Rescale similarities via softmax
+    # Apply softmax normalization to the similarity scores using the specified temperature
     scores = torch.nn.functional.softmax(similarities/temperature, dim=1)
     
-    # Get sorted indices and scores
+    # Sort the results by similarity score in descending order
     sorted_indices = scores.argsort(descending=True)[0]
     sorted_scores = scores[0][sorted_indices]
     
-    # Filter by threshold and get top k
+    # Filter results below the threshold and select the top k matches
     filtered_indices = [
         idx.item() for idx, score in zip(sorted_indices, sorted_scores) 
         if score.item() >= threshold
     ][:k]
     
-    # Get corresponding content items and scores
+    # Retrieve the actual content items corresponding to the top indices
     top_results = [content_list[i] for i in filtered_indices]
     result_scores = [scores[0][i].item() for i in filtered_indices]
     
@@ -360,13 +195,14 @@ def construct_prompt(query, text_results, image_results):
     image_context = ""
     if image_results:
         image_context = "\n## IMAGE CONTENT FROM DOCUMENT:\n\n"
+        # Find all header (h1-h3) and image elements in the HTML_results:
         for image in image_results:
             image_context = image_context + "**Article:** " + image['article_title'] + "\n"
             image_context = image_context + "**Section:** " + image['section'] + "\n"
             image_context = image_context + "**Caption:** " + image['caption'] + "\n"
             image_context = image_context + "(Image is also provided below)\n\n"
 
-    # construct prompt - prioritize text content
+    # Construct the final prompt for the LLM, prioritizing text content and including image captions
     return f"""You are a helpful assistant analyzing document content.
 
 USER QUERY: "{query}"
@@ -406,10 +242,10 @@ def context_retrieval(query, text_embeddings, image_embeddings, text_content_lis
         text_temperature (float): Temperature for text similarity softmax (default: 0.35)
         image_temperature (float): Temperature for image similarity softmax (default: 0.6)
     """
-    # embed query using CLIP
+    # Generate an embedding for the user's query using the CLIP model
     query_embed = embed_text(query)
 
-    # perform similarity search
+    # Perform similarity search for the query against both text and image embeddings
     text_results, _ = similarity_search(query_embed, text_embeddings, text_content_list, k=text_k, threshold=text_threshold, temperature=text_temperature)
     image_results, _ = similarity_search(query_embed, image_embeddings, image_content_list, k=image_k, threshold=image_threshold, temperature=image_temperature)
 

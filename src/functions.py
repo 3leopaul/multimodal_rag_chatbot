@@ -1,4 +1,5 @@
 from bs4 import BeautifulSoup
+import fitz
 import os
 import requests
 import cloudscraper
@@ -194,6 +195,77 @@ def parse_html_images(html_content):
                     'caption': caption or "No caption available"
                 })
     
+    return structured_content
+
+def parse_pdf_content(pdf_path):
+    """
+    Parse PDF content and extract structured content with sections (pages) and text.
+    
+    Args:
+        pdf_path (str): Path to the PDF file
+        
+    Returns:
+        list: List of dictionaries containing structured content
+    """
+    doc = fitz.open(pdf_path)
+    article_title = os.path.basename(pdf_path)
+    structured_content = []
+    
+    for page_num, page in enumerate(doc):
+        text = page.get_text()
+        if text.strip():
+            # Split text into chunks with overlap
+            text_chunks = split_text_with_overlap(text)
+            
+            for chunk in text_chunks:
+                structured_content.append({
+                    'article_title': article_title,
+                    'section': f"Page {page_num + 1}",
+                    'text': chunk
+                })
+    
+    return structured_content
+
+def parse_pdf_images(pdf_path):
+    """
+    Parse PDF content and extract images.
+    
+    Args:
+        pdf_path (str): Path to the PDF file
+        
+    Returns:
+        list: List of dictionaries containing images and their metadata
+    """
+    doc = fitz.open(pdf_path)
+    article_title = os.path.basename(pdf_path)
+    structured_content = []
+    
+
+    
+    for page_num, page in enumerate(doc):
+        image_list = page.get_images(full=True)
+        for img_index, img in enumerate(image_list):
+            xref = img[0]
+            base_image = doc.extract_image(xref)
+            image_bytes = base_image["image"]
+            image_ext = base_image["ext"]
+            
+            image_filename = f"{os.path.splitext(article_title)[0]}_p{page_num+1}_{img_index}.{image_ext}"
+            # Sanitize filename
+            image_filename = re.sub(r'[<>:"/\\\\|?*]', '_', image_filename).strip('_')
+            
+            local_image_path = os.path.join('../data/processed_files/extracted_images/', image_filename)
+            
+            with open(local_image_path, "wb") as f:
+                f.write(image_bytes)
+            
+            structured_content.append({
+                'article_title': article_title,
+                'section': f"Page {page_num + 1}",
+                'image_path': local_image_path,
+                'caption': f"Image from {article_title}, Page {page_num + 1}"
+            })
+            
     return structured_content
 
 def save_to_json(structured_content, output_file='output.json'):

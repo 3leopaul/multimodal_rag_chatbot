@@ -2,7 +2,6 @@ from bs4 import BeautifulSoup
 import fitz
 import os
 import requests
-import cloudscraper
 import json
 import re
 import hashlib
